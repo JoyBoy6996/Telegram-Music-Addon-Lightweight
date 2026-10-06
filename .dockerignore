@@ -1,0 +1,12 @@
+.git
+.env
+ref_repo
+telegram-music-addon.exe
+telegram-music-addon
+*.log
+*.tmp
+tracks_cache.json
+tracks_cache.json.tmp
+test_tracks.json
+test_cache.json
+
