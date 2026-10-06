@@ -14,12 +14,15 @@ Endpoints and client behavior match the Node.js reference, [JoyBoy6996/Telegram-
 ## Table of Contents
 
 - [Features](#features)
-- [Performance](#performance)
-- [Quick Start](#quick-start)
+- [Resource Targets](#resource-targets)
+- [Quick Start (Windows)](#quick-start-windows)
 - [Configuration](#configuration)
+- [Finding Your Channel ID](#finding-your-channel-id)
+- [Run Locally with a Cloudflare Tunnel](#run-locally-with-a-cloudflare-tunnel)
 - [Deployment](#deployment)
 - [Adding to BitChord](#adding-to-bitchord)
 - [API Endpoints](#api-endpoints)
+- [Troubleshooting](#troubleshooting)
 - [Project Structure](#project-structure)
 - [Disclaimer](#disclaimer)
 - [Credits](#credits)
@@ -30,69 +33,80 @@ Endpoints and client behavior match the Node.js reference, [JoyBoy6996/Telegram-
 ## Features
 
 - **Low resource use:** single static binary (`CGO_ENABLED=0`), `net/http` stdlib and [gotd/td](https://github.com/gotd/td) (pure Go MTProto). No web framework.
-- **Tiny Docker image:** built on `distroless/static-debian12:nonroot`, under 30 MB.
+- **Tiny Docker image:** `distroless/static-debian12:nonroot` with a prebuilt binary.
 - **Memory tuning:** `GOMEMLIMIT=90MiB` and `GOGC=50` to avoid OOM kills in 128 MB containers.
-- **HTTP 206 streaming with backpressure:** byte-range requests map to Telegram `upload.getFile` with 4 KB-aligned offsets and 128-256 KB chunks. Whole tracks are never buffered.
+- **HTTP 206 streaming with backpressure:** byte-range requests map to Telegram `upload.getFile` using fixed 256 KB aligned chunks. Whole tracks are never buffered.
 - **Dolby Atmos detection:** E-AC-3 JOC in M4A, raw `.ec3` files and E-AC-3 sync frames. Stereo and Atmos versions stay as separate entries.
+- **Private channel support:** resolves the channel access hash so private channels and supergroups work, not only public ones.
 - **Session compatibility:** loads GramJS/Telethon string sessions (starting with `1`) and `gotd` sessions. Includes a `login` command.
 - **Extras:** ISRC lookup, artwork extraction, `/library.txt` export, secret URL protection.
 
 ---
 
-## Performance
+## Resource Targets
 
-| State | Node.js + GramJS | Go + gotd (this repo) | Budget |
-| :--- | :--- | :--- | :--- |
-| Idle RSS | ~110-135 MB | ~21 MB | < 40 MB |
-| Streaming a 180 MB FLAC | ~160-220 MB | ~38 MB | < 70 MB |
-| Streaming with rapid seeks | ~180-240 MB | ~42 MB | < 70 MB |
-| Peak heap allocations | High GC spikes | < 16 MB | n/a |
+| State | Target |
+| :--- | :--- |
+| Idle RSS | < 40 MB |
+| Streaming a large FLAC | < 70 MB |
+| Container limit | 128 MB RAM, 0.25 vCPU |
 
-> **Method:** a 24-bit / 192 kHz FLAC (183.6 MB) streamed with continuous seeking. Memory measured with Go `ReadMemStats` and container RSS (`cgroup memory.current`). Chunks are streamed in 128-256 KB slices straight into the response writer with TCP backpressure and `sync.Pool` reuse, so RSS stays flat regardless of file size.
+Measure your own numbers with `docker stats <container>` while streaming a large file with seeks.
 
 ---
 
-## Quick Start
+## Quick Start (Windows)
+
+You need [Go](https://go.dev/dl/) (`winget install GoLang.Go`) and Git.
 
 ### 1. Get Telegram credentials
 
 1. Log in at [my.telegram.org](https://my.telegram.org) and open **API development tools**.
 2. Create an application and note the `API_ID` and `API_HASH`.
 3. Create a **private** Telegram channel and upload your audio files.
-4. Note the channel ID (for example `-1001234567890`) or username.
 
 > Keep the channel private. Public channels get crawled by search engines and copyright bots.
 
 ### 2. Generate a session string
 
-```bash
+```powershell
 go run . login
 ```
 
-The wizard asks for your API credentials (if not already in `.env`), phone number, login code and 2FA password (if enabled). It prints the session string and saves your configuration to `.env`.
+Enter your phone number, login code and 2FA password (if enabled). Copy the printed session string into `.env`. The account must be a **member of the channel**.
 
-### 3. Run
+### 3. Configure and run
 
-```bash
+```powershell
+copy .env.example .env
+notepad .env
 go run .
+```
+
+You should see:
+
+```text
+[Channel] Connected to channel: <name>
+[Server] Starting BitChord addon on :3000
+[Indexer] Indexing complete: N audio tracks loaded
 ```
 
 Then open `http://localhost:3000/ping`. It should return `pong`.
 
+> If you ran Linux builds earlier in the same PowerShell window and `go run .` says the executable was not found, clear the leftover variables: `Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED`
+
 ---
 
 ## Configuration
-
-Copy `.env.example` to `.env` and fill it in:
 
 ```env
 TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
 TELEGRAM_SESSION_STRING=1BVtsO1wBu...
 TELEGRAM_CHANNEL=-1001234567890
-URL_SECRET=mysecret
+URL_SECRET=<long random string>
 PORT=3000
-PUBLIC_URL=https://music.example.com
+PUBLIC_URL=https://your-host.example.com
 ```
 
 | Variable | Required | Description |
@@ -100,21 +114,141 @@ PUBLIC_URL=https://music.example.com
 | `TELEGRAM_API_ID` | Yes | From my.telegram.org |
 | `TELEGRAM_API_HASH` | Yes | From my.telegram.org |
 | `TELEGRAM_SESSION_STRING` | Yes | Generated by `login` |
-| `TELEGRAM_CHANNEL` | Yes | Numeric channel ID or username |
+| `TELEGRAM_CHANNEL` | Yes | Numeric ID with `-100` prefix, or `@username`. **Not** the channel name |
 | `URL_SECRET` | Yes | Secret path token protecting all endpoints |
 | `PORT` | No | Server port (default `3000`) |
-| `PUBLIC_URL` | No | Public base URL when behind a proxy or tunnel |
-| `CACHE_PATH` | No | Index cache file (default `tracks_cache.json`). Set to `/data/tracks_cache.json` on hosts with a read-only filesystem |
+| `PUBLIC_URL` | No | Public HTTPS base URL, so stream URLs are correct behind a proxy or tunnel |
+| `CACHE_PATH` | No | Index cache file. On hosts with a read-only filesystem set `/data/tracks_cache.json` (make sure your build reads this variable) |
 
-> Never commit `.env`. It is listed in `.gitignore`.
+Generate a secret in PowerShell:
+
+```powershell
+-join ((48..57)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+```
+
+> Never commit `.env`, and never reuse an example secret you have seen in docs or chats.
+
+---
+
+## Finding Your Channel ID
+
+Open the channel in [web.telegram.org/k](https://web.telegram.org/k) and read the URL:
+
+```text
+https://web.telegram.org/k/#-4453762186
+```
+
+Web K **drops the `-100` prefix**, so add it back:
+
+```text
+TELEGRAM_CHANNEL=-1004453762186
+```
+
+Rules:
+
+- Channels and supergroups use IDs like `-100` + number.
+- The Telegram account behind the session string must be a member of the channel.
+- The channel **name** (for example `My private songs`) does not work. Use the ID or `@username`.
+
+---
+
+## Run Locally with a Cloudflare Tunnel
+
+BitChord needs HTTPS, so expose your local server through a tunnel.
+
+```powershell
+winget install Cloudflare.cloudflared
+```
+
+Window 1:
+
+```powershell
+go run .
+```
+
+Window 2:
+
+```powershell
+cloudflared tunnel --url http://localhost:3000
+```
+
+Copy the printed `https://xxxx.trycloudflare.com` URL, set it as `PUBLIC_URL` in `.env`, restart `go run .`, and add `https://xxxx.trycloudflare.com/<URL_SECRET>/manifest.json` in BitChord.
+
+Notes:
+
+- The tunnel URL changes every restart, and only works while your PC and both windows are running.
+- Do not run local and deployed copies with the **same session string** at the same time. Telegram can revoke the session. Stop one first.
 
 ---
 
 ## Deployment
 
-### Docker (128 MB / 0.25 vCPU)
+### Build the Linux binary (required for Deplexo)
 
-Create the cache file first so Docker mounts a file, not a folder.
+Compiling `gotd/td` needs more memory and time than a free build container allows (builds get killed or hit the 10 minute limit). Build locally and commit the binary:
+
+```powershell
+$env:GOOS="linux"; $env:GOARCH="amd64"; $env:CGO_ENABLED="0"
+go build -ldflags="-s -w" -trimpath -o telegram-music-addon .
+Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
+```
+
+Dockerfile (copies the prebuilt binary):
+
+```dockerfile
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /app
+
+COPY --chmod=755 telegram-music-addon /app/telegram-music-addon
+COPY icon.png /app/icon.png
+
+ENV GOMEMLIMIT=90MiB
+ENV GOGC=50
+ENV PORT=3000
+
+EXPOSE 3000
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/app/telegram-music-addon"]
+```
+
+Important details:
+
+- `--chmod=755` is required. Windows Git does not store the executable bit, and without it the container fails with "the start command could not be run because it is not executable".
+- `telegram-music-addon` must not be listed in `.gitignore` or `.dockerignore`. If it is ignored, the build fails with "no items matching glob".
+- Rebuild and commit the binary after **every** code change.
+
+Push:
+
+```powershell
+git add -f telegram-music-addon Dockerfile
+git add .
+git commit -m "Rebuild linux binary"
+git push
+```
+
+If the push is rejected, run `git pull --rebase origin main` and push again.
+
+### Deplexo (free tier)
+
+[Deplexo](https://deplexo.com) Free plan: 0.25 CPU, 128 MB RAM, 100 GB/month transfer, 10 Mbit/s per app, EU (Germany) region, Dockerfile builds.
+
+1. Push the repo (with the prebuilt binary) to GitHub.
+2. In Deplexo, click **Deploy new**, pick the repo and keep the Dockerfile build method.
+3. Open **Environment** (or use **Paste .env**) and add all variables above, including `PORT=3000` and `PUBLIC_URL=https://<app>.de.deplexo.com`.
+4. Deploy and watch **Logs**. The build log should be short (`FROM distroless`, two `COPY`s, a few `ENV`s).
+5. Check `https://<app>.de.deplexo.com/ping` returns `pong`.
+
+Notes:
+
+- The app URL is `https://<project-name>.de.deplexo.com`. Check the dashboard for the exact URL.
+- The container filesystem is read-only except `/data`, so use `CACHE_PATH=/data/tracks_cache.json`.
+- 10 Mbit/s is fine for 16-bit FLAC. 24-bit/192 kHz files may buffer.
+- Deployments auto-run on every push to `main`.
+
+### Docker (any host)
 
 ```bash
 touch tracks_cache.json
@@ -130,47 +264,15 @@ docker run -d \
   telegram-music-addon:latest
 ```
 
-On Windows PowerShell, use `${PWD}` instead of `$(pwd)` and a backtick `` ` `` for line breaks.
+On Windows PowerShell use `${PWD}` and a backtick for line breaks.
 
-### Docker Compose
-
-```yaml
-services:
-  music-addon:
-    build: .
-    container_name: telegram-music-addon
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    env_file: .env
-    volumes:
-      - ./tracks_cache.json:/app/tracks_cache.json
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 128M
-        reservations:
-          memory: 40M
-```
-
-```bash
-docker compose up -d
-```
-
-### Native binary
-
-```bash
-CGO_ENABLED=0 go build -ldflags="-s -w" -o telegram-music-addon .
-GOMEMLIMIT=90MiB GOGC=50 ./telegram-music-addon
-```
-
+---
 
 ## Adding to BitChord
 
 1. Open BitChord on Android.
 2. Go to **Settings > Sources / Addons**.
-3. Add your manifest URL:
+3. Add:
 
 ```text
 https://<your-host>/<URL_SECRET>/manifest.json
@@ -199,14 +301,37 @@ All endpoints except `/ping`, `/icon.png` and `/favicon.ico` require the secret 
 | `/icon.png` | GET | Addon icon |
 | `/favicon.ico` | GET | Browser favicon |
 
+Opening the server without the secret prefix returns `Unauthorized: invalid or missing secret path`. That is expected.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| :--- | :--- |
+| `channel "..." not found in user dialogs` | `TELEGRAM_CHANNEL` is a name. Use the numeric ID or `@username`. |
+| `CHANNEL_INVALID` on a private channel | Missing `-100` prefix, wrong ID, or the session account is not a member. See [Finding Your Channel ID](#finding-your-channel-id). |
+| `LIMIT_INVALID` while streaming | A request crossed a 1 MB boundary. Fixed by fetching fixed 256 KB aligned chunks (`offset - offset % 262144`, limit 262144). |
+| `build timed out` or `compile: signal: killed` on Deplexo | Do not compile on the host. Use the prebuilt binary workflow above. |
+| `COPY ... no items matching glob` | The binary is in `.dockerignore` or `.gitignore`. Remove the line and `git add -f` it. |
+| `start command ... not executable` | Use `COPY --chmod=755` for the binary. |
+| `go run .` says executable not found | Leftover `GOOS=linux`. Run `Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED`. |
+| `git push` rejected (fetch first) | Run `git pull --rebase origin main`, then push again. |
+| `AUTH_KEY_UNREGISTERED` or `AUTH_KEY_DUPLICATED` | Session revoked or used in two places. Run `go run . login` again and use it in one place only. |
+| Manifest URL shows `localhost` | `PUBLIC_URL` is not set. |
+| Unauthorized in the browser | Missing or wrong `URL_SECRET` prefix in the URL. |
+
 ---
 
 ## Project Structure
 
 ```text
 .
-├── main.go            # entrypoint
-├── internal/          # indexer, search, streaming, Telegram client
+├── main.go                  # entrypoint and CLI (login)
+├── internal/
+│   ├── telegram/            # MTProto client, indexing, chunked downloads
+│   └── index/               # in-memory library and search
+├── telegram-music-addon     # prebuilt Linux binary (committed for Deplexo)
 ├── Dockerfile
 ├── .dockerignore
 ├── .env.example
