@@ -165,19 +165,6 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o telegram-music-addon .
 GOMEMLIMIT=90MiB GOGC=50 ./telegram-music-addon
 ```
 
-### Deplexo (free tier)
-
-[Deplexo](https://deplexo.com) Free plan gives 0.25 CPU, 128 MB RAM and 100 GB/month transfer, and builds from your Dockerfile.
-
-1. Push this repo to GitHub.
-2. In Deplexo, click **Deploy new**, pick the repo and choose the Dockerfile build.
-3. In **Environment**, add the variables above, plus `PORT=3000` and `CACHE_PATH=/data/tracks_cache.json` (only `/data` persists).
-4. Deploy and confirm the health check on `/ping` passes in **Logs**.
-5. Your URL is `https://<app>.de.deplexo.com`.
-
-Free tier limits: 10 Mbit/s per app (fine for 16-bit FLAC, may buffer on 24-bit/192 kHz) and EU (Germany) region only.
-
----
 
 ## Adding to BitChord
 
