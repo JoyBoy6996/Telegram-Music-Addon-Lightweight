@@ -67,7 +67,7 @@ func main() {
 				// Index only when cache is empty
 if lib.Count() == 0 {
 	go func() {
-		indexCtx, indexCancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		indexCtx, indexCancel := context.WithCancel(ctx)
 		defer indexCancel()
 
 		if err := tgClient.IndexChannel(indexCtx, lib, func(indexed int) {
