@@ -8,12 +8,7 @@ telegram-music-addon.exe
 .env.local
 
 # Cache & Temporary Data
-tracks_cache.json
-tracks_cache.json.gz
-tracks_cache.json.gz.bak
-tracks_cache.json.tmp
-test_tracks.json
-test_cache.json
+
 
 # Logs & Debug
 *.log
