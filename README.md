@@ -183,7 +183,7 @@ Notes:
 
 ## Deployment
 
-### Build the Linux binary (required for Deplexo)
+### Build the Linux binary 
 
 Compiling `gotd/td` needs more memory and time than a free build container allows (builds get killed or hit the 10 minute limit). Build locally and commit the binary:
 
@@ -231,15 +231,6 @@ git push
 
 If the push is rejected, run `git pull --rebase origin main` and push again.
 
-### Deplexo (free tier)
-
-[Deplexo](https://deplexo.com) Free plan: 0.25 CPU, 128 MB RAM, 100 GB/month transfer, 10 Mbit/s per app, EU (Germany) region, Dockerfile builds.
-
-1. Push the repo (with the prebuilt binary) to GitHub.
-2. In Deplexo, click **Deploy new**, pick the repo and keep the Dockerfile build method.
-3. Open **Environment** (or use **Paste .env**) and add all variables above, including `PORT=3000` and `PUBLIC_URL=https://<app>.de.deplexo.com`.
-4. Deploy and watch **Logs**. The build log should be short (`FROM distroless`, two `COPY`s, a few `ENV`s).
-5. Check `https://<app>.de.deplexo.com/ping` returns `pong`.
 
 Notes:
 
