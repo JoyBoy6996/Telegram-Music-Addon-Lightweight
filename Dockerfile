@@ -2,7 +2,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 
-COPY telegram-music-addon /app/telegram-music-addon
+COPY --chmod=755 telegram-music-addon /app/telegram-music-addon
 COPY icon.png /app/icon.png
 
 ENV GOMEMLIMIT=90MiB

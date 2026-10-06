@@ -44,17 +44,17 @@ func StrippedPhotoToJpg(stripped []byte) []byte {
 }
 
 type Client struct {
-	client        *telegram.Client
-	storage       *sessionpkg.StringStorage
-	channelInput  string
-	channelPeer   tg.InputPeerClass
-	channelTitle  string
-	downloadSem   chan struct{}
-	docMu         sync.RWMutex
-	docs          map[string]*tg.Document
-	isIndexing    bool
-	indexMu       sync.Mutex
-	lastIndexed   time.Time
+	client       *telegram.Client
+	storage      *sessionpkg.StringStorage
+	channelInput string
+	channelPeer  tg.InputPeerClass
+	channelTitle string
+	downloadSem  chan struct{}
+	docMu        sync.RWMutex
+	docs         map[string]*tg.Document
+	isIndexing   bool
+	indexMu      sync.Mutex
+	lastIndexed  time.Time
 }
 
 func NewClient(apiID int, apiHash, sessionStr, channelInput string) (*Client, error) {
@@ -126,14 +126,19 @@ func (c *Client) resolveChannel(ctx context.Context, input string) (tg.InputPeer
 		return nil, "", errors.New("empty channel input")
 	}
 
+	// Normalise: extract target from t.me links
 	target := cleanInput
 	tmeRe := regexp.MustCompile(`(?i)t\.me/(?:c/)?([a-zA-Z0-9_+-]+)`)
 	if m := tmeRe.FindStringSubmatch(cleanInput); len(m) > 1 {
 		target = m[1]
 	}
-	stripped := strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(target, "-100"), "@"))
 
-	// 1. Try ContactsResolveUsername if looks like a username
+	// Strip -100 prefix and @ to get a raw identifier for matching
+	rawTarget := strings.TrimPrefix(target, "-100")
+	rawTarget = strings.TrimPrefix(rawTarget, "@")
+	rawTargetLower := strings.ToLower(rawTarget)
+
+	// 1. Try ContactsResolveUsername for public usernames first
 	if strings.HasPrefix(target, "@") || (!strings.HasPrefix(target, "-") && !isNumeric(target)) {
 		uname := strings.TrimPrefix(target, "@")
 		res, err := c.client.API().ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
@@ -142,6 +147,7 @@ func (c *Client) resolveChannel(ctx context.Context, input string) (tg.InputPeer
 		if err == nil {
 			for _, ch := range res.Chats {
 				if channel, ok := ch.(*tg.Channel); ok {
+					log.Printf("[Channel] Resolved public username @%s -> ID %d (AccessHash present)", uname, channel.ID)
 					return &tg.InputPeerChannel{
 						ChannelID:  channel.ID,
 						AccessHash: channel.AccessHash,
@@ -151,48 +157,123 @@ func (c *Client) resolveChannel(ctx context.Context, input string) (tg.InputPeer
 		}
 	}
 
-	// 2. Iterate Dialogs to find channel by numeric ID or title
-	dialogs, err := c.client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		Limit: 200,
-	})
-	if err == nil {
+	// 2. Page through ALL dialogs to find the channel with its AccessHash
+	//    Private channels REQUIRE a valid AccessHash from the dialog/chat list.
+	log.Printf("[Channel] Searching dialogs for channel: %q (raw target: %q)", cleanInput, rawTargetLower)
+
+	var allChats []tg.ChatClass
+	var offsetDate int
+	var offsetID int
+	offsetPeer := tg.InputPeerClass(&tg.InputPeerEmpty{})
+
+	for page := 0; page < 20; page++ { // safety limit: 20 pages * 100 = 2000 dialogs
+		res, err := c.client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetDate: offsetDate,
+			OffsetID:   offsetID,
+			OffsetPeer: offsetPeer,
+			Limit:      100,
+		})
+		if err != nil {
+			log.Printf("[Channel] Warning: MessagesGetDialogs page %d failed: %v", page, err)
+			break
+		}
+
 		var chats []tg.ChatClass
-		switch d := dialogs.(type) {
+		var messages []tg.MessageClass
+		var dialogCount int
+
+		switch d := res.(type) {
 		case *tg.MessagesDialogs:
 			chats = d.Chats
+			messages = d.Messages
+			dialogCount = len(d.Dialogs)
 		case *tg.MessagesDialogsSlice:
 			chats = d.Chats
+			messages = d.Messages
+			dialogCount = len(d.Dialogs)
+		default:
+			break
 		}
 
-		for _, ch := range chats {
-			if channel, ok := ch.(*tg.Channel); ok {
-				chIDStr := strconv.FormatInt(channel.ID, 10)
-				fullIDStr := fmt.Sprintf("-100%s", chIDStr)
-				uname := strings.ToLower(channel.Username)
-				title := strings.ToLower(channel.Title)
+		allChats = append(allChats, chats...)
 
-				if chIDStr == cleanInput || fullIDStr == cleanInput ||
-					chIDStr == target || fullIDStr == target ||
-					chIDStr == stripped || (uname != "" && (uname == stripped || uname == strings.ToLower(target))) ||
-					title == strings.ToLower(cleanInput) || title == strings.ToLower(target) {
-					return &tg.InputPeerChannel{
-						ChannelID:  channel.ID,
-						AccessHash: channel.AccessHash,
-					}, channel.Title, nil
-				}
+		// If we got fewer dialogs than the limit, this is the last page
+		if dialogCount < 100 {
+			break
+		}
+
+		// Advance the offset cursor using the last message in this page
+		if len(messages) > 0 {
+			lastMsg := messages[len(messages)-1]
+			if msg, ok := lastMsg.(*tg.Message); ok {
+				offsetDate = msg.Date
+				offsetID = msg.ID
+				offsetPeer = &tg.InputPeerEmpty{} // reset; the API uses date+id for paging
 			}
+		} else {
+			break
 		}
 	}
 
-	// 3. Fallback: direct ChannelID parse if numeric
-	if numID, err := strconv.ParseInt(stripped, 10, 64); err == nil {
-		return &tg.InputPeerChannel{
-			ChannelID:  numID,
-			AccessHash: 0,
-		}, fmt.Sprintf("Channel %d", numID), nil
+	log.Printf("[Channel] Scanned %d chats across dialogs", len(allChats))
+
+	// 3. Match the target channel from the collected chats
+	for _, ch := range allChats {
+		channel, ok := ch.(*tg.Channel)
+		if !ok {
+			continue
+		}
+
+		chIDStr := strconv.FormatInt(channel.ID, 10)
+		fullIDStr := "-100" + chIDStr
+		uname := strings.ToLower(channel.Username)
+		title := strings.ToLower(channel.Title)
+
+		matched := chIDStr == cleanInput ||
+			fullIDStr == cleanInput ||
+			chIDStr == target ||
+			fullIDStr == target ||
+			chIDStr == rawTargetLower ||
+			(uname != "" && (uname == rawTargetLower || uname == strings.ToLower(target))) ||
+			title == strings.ToLower(cleanInput) ||
+			title == strings.ToLower(target)
+
+		if matched {
+			log.Printf("[Channel] Matched: %q (ID: %d, AccessHash: %d)", channel.Title, channel.ID, channel.AccessHash)
+			return &tg.InputPeerChannel{
+				ChannelID:  channel.ID,
+				AccessHash: channel.AccessHash,
+			}, channel.Title, nil
+		}
 	}
 
-	return nil, "", fmt.Errorf("channel %q not found in user dialogs", input)
+	// 4. NOT FOUND — log up to 50 available channels so the user can pick the right one
+	log.Printf("[Channel] ❌ Channel %q not found in dialogs. Listing available channels:", cleanInput)
+	count := 0
+	for _, ch := range allChats {
+		if count >= 50 {
+			log.Printf("[Channel]   ... and %d more (showing first 50)", len(allChats)-50)
+			break
+		}
+		switch c := ch.(type) {
+		case *tg.Channel:
+			log.Printf("[Channel]   • %s | -100%d", c.Title, c.ID)
+			count++
+		case *tg.Chat:
+			log.Printf("[Channel]   • %s | -%d (group chat, not a channel)", c.Title, c.ID)
+			count++
+		}
+	}
+	if count == 0 {
+		log.Printf("[Channel]   (no channels or groups found in your dialogs)")
+	}
+
+	return nil, "", fmt.Errorf(
+		"channel %q not found in your Telegram dialogs. "+
+			"Make sure you have joined/created this channel and it appears in your chat list. "+
+			"Use the exact -100ID shown above, or the channel title",
+		cleanInput,
+	)
 }
 
 func isNumeric(s string) bool {
@@ -281,19 +362,12 @@ func (c *Client) GetFileChunk(ctx context.Context, msgID string, offset int64, l
 		}
 	}
 
-	// Offset must be 4KB aligned for MTProto upload.getFile
-	alignedOffset := (offset / 4096) * 4096
+	// Telegram rule: offset must be 4KB-aligned and a request must not cross
+	// a 1MB boundary. Aligning to a fixed 256KB chunk guarantees both.
+	const tgChunk = 256 * 1024
+	alignedOffset := offset - (offset % tgChunk)
 	skip := int(offset - alignedOffset)
-
-	reqLimit := limit + skip
-	// Limit must be a power of 2 or multiple of 4KB up to 512KB
-	if reqLimit <= 128*1024 {
-		reqLimit = 128 * 1024
-	} else if reqLimit <= 256*1024 {
-		reqLimit = 256 * 1024
-	} else {
-		reqLimit = 512 * 1024
-	}
+	reqLimit := tgChunk
 
 	req := &tg.UploadGetFileRequest{
 		Location: &tg.InputDocumentFileLocation{
@@ -748,4 +822,3 @@ func (c *Client) parseTrackMessage(ctx context.Context, msg *tg.Message, doc *tg
 		Keep:         keep,
 	}
 }
-
