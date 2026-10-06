@@ -4,7 +4,3 @@ ref_repo
 *.log
 *.tmp
 
-tracks_cache.json.tmp
-test_tracks.json
-test_cache.json
-
