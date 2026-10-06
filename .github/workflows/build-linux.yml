@@ -1,0 +1,47 @@
+name: Build Linux AMD64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Show Go version
+        run: go version
+
+      - name: Build Linux AMD64 binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -o telegram-music-addon .
+
+      - name: Check binary
+        run: |
+          file telegram-music-addon
+          ls -lh telegram-music-addon
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-music-addon-linux-amd64
+          path: telegram-music-addon
+          retention-days: 7
