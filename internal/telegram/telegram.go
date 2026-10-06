@@ -485,6 +485,27 @@ func (c *Client) GetArtwork(ctx context.Context, msgID string) ([]byte, string, 
 	return nil, "", errors.New("no artwork found")
 }
 
+func isFloodWait(err error) (int, bool) {
+    if err == nil {
+        return 0, false
+    }
+
+    s := strings.ToUpper(err.Error())
+
+    re := regexp.MustCompile(`FLOOD_WAIT[_\s\(]*(\d+)`)
+    match := re.FindStringSubmatch(s)
+
+    if len(match) < 2 {
+        return 0, false
+    }
+
+    seconds, err := strconv.Atoi(match[1])
+    if err != nil {
+        return 0, false
+    }
+
+    return seconds, true
+}
 // ── Channel Indexing ────────────────────────────────────────────────────────
 
 func (c *Client) IndexChannel(ctx context.Context, lib *index.Library, onProgress func(indexed int)) error {
@@ -523,14 +544,34 @@ func (c *Client) IndexChannel(ctx context.Context, lib *index.Library, onProgres
 		default:
 		}
 
-		res, err := c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-			Peer:     c.channelPeer,
-			OffsetID: offsetID,
-			Limit:    100,
-		})
-		if err != nil {
-			return fmt.Errorf("get history failed: %w", err)
-		}
+		var res tg.MessagesMessagesClass
+
+for {
+    res, err = c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+        Peer:     c.channelPeer,
+        OffsetID: offsetID,
+        Limit:    100,
+    })
+
+    if err == nil {
+        break
+    }
+
+    if waitSeconds, ok := isFloodWait(err); ok {
+        log.Printf("[Indexer] Telegram FLOOD_WAIT: waiting %d seconds before retry...", waitSeconds)
+
+        waitTimer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+        select {
+        case <-waitTimer.C:
+            continue
+        case <-ctx.Done():
+            waitTimer.Stop()
+            return ctx.Err()
+        }
+    }
+
+    return fmt.Errorf("get history failed: %w", err)
+}
 
 		var messages []tg.MessageClass
 		switch m := res.(type) {
