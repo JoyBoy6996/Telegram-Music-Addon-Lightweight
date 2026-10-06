@@ -64,33 +64,30 @@ func main() {
 				log.Printf("[Telegram Error] Failed to connect MTProto: %v", err)
 			} else {
 				// Initial index at startup (async)
-				go func() {
-					indexCtx, indexCancel := context.WithTimeout(context.Background(), 20*time.Minute)
-					defer indexCancel()
-					if err := tgClient.IndexChannel(indexCtx, lib, func(indexed int) {
-						log.Printf("[Indexer] Progress: %d tracks indexed", indexed)
-					}); err != nil {
-						log.Printf("[Indexer Error] %v", err)
-					}
-				}()
+				// Index only when cache is empty
+if lib.Count() == 0 {
+	go func() {
+		indexCtx, indexCancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer indexCancel()
+
+		if err := tgClient.IndexChannel(indexCtx, lib, func(indexed int) {
+			log.Printf("[Indexer] Progress: %d tracks indexed", indexed)
+		}); err != nil {
+			log.Printf("[Indexer Error] %v", err)
+		} else {
+			if err := lib.SaveCache(); err != nil {
+				log.Printf("[Cache] Failed to save index: %v", err)
+			} else {
+				log.Printf("[Cache] Initial indexing completed and saved")
+			}
+		}
+	}
+} else {
+	log.Printf("[Indexer] Cache contains %d tracks. Skipping indexing.", lib.Count())
+}
 
 				// Periodic 30-minute re-index timer
-				go func() {
-					ticker := time.NewTicker(30 * time.Minute)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case <-ticker.C:
-							indexCtx, indexCancel := context.WithTimeout(context.Background(), 20*time.Minute)
-							if err := tgClient.IndexChannel(indexCtx, lib, nil); err != nil {
-								log.Printf("[Periodic Indexer Error] %v", err)
-							}
-							indexCancel()
-						}
-					}
-				}()
+				
 			}
 		}
 	} else {
