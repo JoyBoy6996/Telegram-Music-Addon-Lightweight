@@ -81,7 +81,7 @@ if lib.Count() == 0 {
 				log.Printf("[Cache] Initial indexing completed and saved")
 			}
 		}
-	}
+	}()
 } else {
 	log.Printf("[Indexer] Cache contains %d tracks. Skipping indexing.", lib.Count())
 }
