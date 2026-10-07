@@ -545,6 +545,7 @@ func (c *Client) IndexChannel(ctx context.Context, lib *index.Library, onProgres
 		}
 
 		var res tg.MessagesMessagesClass
+var err error
 
 for {
     res, err = c.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
@@ -561,6 +562,7 @@ for {
         log.Printf("[Indexer] Telegram FLOOD_WAIT: waiting %d seconds before retry...", waitSeconds)
 
         waitTimer := time.NewTimer(time.Duration(waitSeconds) * time.Second)
+
         select {
         case <-waitTimer.C:
             continue
